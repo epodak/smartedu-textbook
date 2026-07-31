@@ -1,0 +1,13 @@
+# 批量下载示例
+#   python scripts/download.py --batch examples/books.txt
+#
+# 每行一个搜索词，或一个教材封面图地址。
+# 以 # 开头的行会被忽略。
+# 注意：搜索条件必须能唯一确定一本教材，否则该行会被跳过。
+
+苏教版 二年级 数学 上册
+苏教版 二年级 数学 下册
+苏教版 三年级 数学 上册
+
+# 也可以混用图片地址（用于目录里查不到的教材）
+# https://r3-ndr.ykt.cbern.com.cn/edu_product/esp/assets/<36位ID>.t/zh-CN/<时间戳>/transcode/image/1.jpg

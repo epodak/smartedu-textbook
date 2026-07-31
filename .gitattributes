@@ -1,0 +1,15 @@
+# 仓库内统一用 LF 存储，检出时由各平台自行处理，
+# 避免 Windows 贡献者提交出整片 CRLF 差异。
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.md   text eol=lf
+*.js   text eol=lf
+*.txt  text eol=lf
+*.json text eol=lf
+
+# 二进制文件不做换行转换
+*.pdf  binary
+*.jpg  binary
+*.png  binary
+*.zip  binary

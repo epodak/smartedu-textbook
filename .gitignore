@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 测试产物
+.testout/
+*.pdf
+*.jpg
+
+# 本地缓存（目录索引缓存在 ~/.cache/smartedu/，不在仓库内）
+.cache/
