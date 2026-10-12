@@ -92,8 +92,9 @@ import pdfmake  # noqa: E402
 def resolve_book(args, books: list[catalog.Book]) -> catalog.Book | None:
     """根据参数确定唯一一本教材。返回 None 表示无法确定（已打印原因）。"""
     if args.url or (args.id and args.ts):
+        prod = "assets"
         if args.url:
-            cid, ts = catalog.parse_coord_url(args.url)
+            cid, ts, prod = catalog.parse_coord_url(args.url)
         else:
             cid, ts = args.id, args.ts
         # 先在目录里反查，命中就能拿到完整元数据用于建目录
@@ -102,13 +103,13 @@ def resolve_book(args, books: list[catalog.Book]) -> catalog.Book | None:
                 if b.timestamp != ts:
                     print(f"  [!] 你提供的时间戳 {ts} 与目录记录的 {b.timestamp} 不同。")
                     print(f"      将使用你提供的值。若下载结果页数异常，请改用 --search。")
-                    b = catalog.Book(**{**b.to_dict(), "timestamp": ts})
+                    b = catalog.Book(**{**b.to_dict(), "timestamp": ts, "product": prod})
                 return b
-        print("  [!] 该教材不在目录索引中，将以最简信息保存到「未分类」目录。")
+        print("  [!] 该资源不在目录索引中，将以最简信息保存到「未分类」目录。")
         return catalog.Book(
-            id=cid, title=args.name or f"教材_{cid[:8]}", stage="", grade="",
+            id=cid, title=args.name or f"资源_{cid[:8]}", stage="", grade="",
             volume="", subject="", version="", publisher="",
-            content_id=cid, timestamp=ts,
+            content_id=cid, timestamp=ts, product=prod,
         )
 
     hits = catalog.search(
@@ -128,6 +129,24 @@ def resolve_book(args, books: list[catalog.Book]) -> catalog.Book | None:
             print("\n提示：先用 --list 配合 --grade / --subject 查看可选项，例如")
             print('    python download.py --list --grade 三年级 --subject 数学')
         return None
+
+    # 若同名且同维度的书籍因跨年度存在多条记录，自动收敛至最新时间戳版本
+    deduped: list[catalog.Book] = []
+    seen: dict[tuple, catalog.Book] = {}
+    for b in hits:
+        k = (b.title, b.stage, b.grade, b.volume, b.subject, b.version)
+        if k not in seen:
+            seen[k] = b
+            deduped.append(b)
+        else:
+            try:
+                if int(b.timestamp) > int(seen[k].timestamp):
+                    idx = deduped.index(seen[k])
+                    deduped[idx] = b
+                    seen[k] = b
+            except Exception:
+                pass
+    hits = deduped
 
     if len(hits) == 1:
         return hits[0]

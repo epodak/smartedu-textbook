@@ -37,9 +37,11 @@ CACHE_DIR = Path.home() / ".cache" / "smartedu"
 
 # preview 里的图片地址形如：
 #   https://r3-ndr.ykt.cbern.com.cn/edu_product/esp/assets/{uuid}.t/zh-CN/{ts}/transcode/image/1.jpg
+# 或教学设计：
+#   https://r2-ndr-private.ykt.cbern.com.cn/edu_product/esp/lesson_plandesign/{uuid}.t/zh-CN/{ts}/transcode/pdf.pdf
 COORD_RE = re.compile(
-    r"https://(?P<host>r\d)-ndr\.ykt\.cbern\.com\.cn/edu_product/esp/assets/"
-    r"(?P<cid>[0-9a-fA-F-]{36})\.t/zh-CN/(?P<ts>\d+)/transcode/image/\d+\.jpg"
+    r"https://(?P<host>r\d)-ndr(?:\-private)?\.ykt\.cbern\.com\.cn/edu_product/esp/(?P<product>[a-zA-Z0-9_-]+)/"
+    r"(?P<cid>[0-9a-fA-F-]{36})\.t/zh-CN/(?P<ts>\d+)/transcode/(?:image/\d+\.jpg|pdf\.pdf)"
 )
 
 STAGES = ("小学", "初中", "高中")
@@ -64,9 +66,10 @@ class Book:
     publisher: str
     content_id: str
     timestamp: str
+    product: str = "assets"
 
     def image_url(self, page: int, host: str = "r1") -> str:
-        return (f"https://{host}-ndr.ykt.cbern.com.cn/edu_product/esp/assets/"
+        return (f"https://{host}-ndr.ykt.cbern.com.cn/edu_product/esp/{self.product}/"
                 f"{self.content_id}.t/zh-CN/{self.timestamp}/transcode/image/{page}.jpg")
 
     def label(self) -> str:
@@ -153,6 +156,14 @@ def _load_cache(path: Path) -> list[Book]:
 
 # ────────────────────────── 条目解析 ──────────────────────────
 
+KNOWN_SUBJECTS = (
+    "语文", "数学", "英语", "道德与法治", "思想品德", "历史", "地理",
+    "生物学", "生物", "物理", "化学", "科学", "信息科技", "信息技术",
+    "劳动", "音乐", "美术", "体育与健康", "艺术", "俄语", "日语", "法语",
+    "艺术·美术", "艺术·音乐"
+)
+
+
 def _parse(item: dict) -> Book | None:
     """把一条原始目录记录转成 Book；无法定位图片坐标的直接丢弃。"""
     if not isinstance(item, dict):
@@ -178,14 +189,26 @@ def _parse(item: dict) -> Book | None:
     grade = next((t for t in tags if t.endswith("年级") and t not in STAGES), "")
     version = next((t for t in tags if t.endswith("版")), "")
 
-    subject = ""
-    for t in tags:
-        if t in NOISE_TAGS or t in STAGES or t in VOLUMES:
-            continue
-        if t == grade or t == version:
-            continue
-        subject = t
-        break
+    title_val = (item.get("title") or "").strip()
+
+    # 优先匹配已知学科
+    subject = next((t for t in tags if t in KNOWN_SUBJECTS), "")
+    if not subject:
+        for t in tags:
+            if t in NOISE_TAGS or t in STAGES or t in VOLUMES:
+                continue
+            if t == grade or t == version:
+                continue
+            if re.match(r"^\d{4}年度$", t) or t in ("非常简单", "简单", "中等", "困难", "盲校", "聋校", "培智学校"):
+                continue
+            subject = t
+            break
+
+    if not subject:
+        for ks in KNOWN_SUBJECTS:
+            if ks in title_val:
+                subject = ks
+                break
 
     providers = item.get("provider_list") or []
     publisher = ""
@@ -194,7 +217,7 @@ def _parse(item: dict) -> Book | None:
 
     return Book(
         id=item.get("id", ""),
-        title=(item.get("title") or "").strip(),
+        title=title_val,
         stage=stage, grade=grade, volume=volume,
         subject=subject, version=version, publisher=publisher,
         content_id=coord.group("cid"), timestamp=coord.group("ts"),
@@ -214,7 +237,10 @@ def search(books: list[Book], query: str = "", **filters) -> list[Book]:
     for field, want in filters.items():
         if not want:
             continue
-        result = [b for b in result if want in (getattr(b, field, "") or "")]
+        if field in ("stage", "grade", "volume", "subject"):
+            result = [b for b in result if getattr(b, field, "") == want]
+        else:
+            result = [b for b in result if want in (getattr(b, field, "") or "")]
 
     for word in query.split():
         w = word.strip()
@@ -226,7 +252,24 @@ def search(books: list[Book], query: str = "", **filters) -> list[Book]:
             or w in b.grade or w in b.volume or w in b.stage or w in b.publisher
         ]
 
-    return result
+    # 自动按核心维度去重，保留最新时间戳版本
+    deduped: list[Book] = []
+    seen: dict[tuple, Book] = {}
+    for b in result:
+        k = (b.title, b.stage, b.grade, b.volume, b.subject, b.version)
+        if k not in seen:
+            seen[k] = b
+            deduped.append(b)
+        else:
+            try:
+                if int(b.timestamp) > int(seen[k].timestamp):
+                    idx = deduped.index(seen[k])
+                    deduped[idx] = b
+                    seen[k] = b
+            except Exception:
+                pass
+
+    return deduped
 
 
 def distinct(books: list[Book], field: str) -> list[str]:
@@ -235,18 +278,19 @@ def distinct(books: list[Book], field: str) -> list[str]:
     return sorted(v for v in seen if v)
 
 
-def parse_coord_url(url: str) -> tuple[str, str]:
-    """从任意一张封面/内页图片地址解析出 (contentId, timestamp)。
+def parse_coord_url(url: str) -> tuple[str, str, str]:
+    """从任意一张封面/内页图片或 PDF 地址解析出 (contentId, timestamp, product)。
 
-    回退方案：目录里没有 preview 的教材，用户可在平台上右键封面图
-    复制地址，直接喂给本函数。
+    回退方案：目录里没有 preview 的教材或教学设计，用户可复制地址直接喂给本函数。
     """
     m = COORD_RE.search(url.strip())
     if not m:
         raise CatalogError(
-            "无法从该地址解析教材坐标。\n"
-            "  需要的是平台上教材封面图的地址，形如：\n"
+            "无法从该地址解析资源坐标。\n"
+            "  需要的是平台资源地址，形如：\n"
             "  https://r3-ndr.ykt.cbern.com.cn/edu_product/esp/assets/"
-            "<36位ID>.t/zh-CN/<数字时间戳>/transcode/image/1.jpg"
+            "<36位ID>.t/zh-CN/<数字时间戳>/transcode/image/1.jpg\n"
+            "  或教学设计/课件地址：\n"
+            "  https://r2-ndr-private.ykt.cbern.com.cn/edu_product/esp/lesson_plandesign/..."
         )
-    return m.group("cid"), m.group("ts")
+    return m.group("cid"), m.group("ts"), m.group("product")
